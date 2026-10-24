@@ -1,16 +1,21 @@
-/* from frish2021, modified by chatgpt */
+use std::collections::HashMap;
+
+enum JsonElement {
+    Object(HashMap<String, JsonElement>),
+    String(String),
+    Identifier
+}
+
 struct Parser<'a> {
     chars: std::str::Chars<'a>,
     current: Option<char>,
 }
 
-/* from frish2021, modified by chatgpt */
 impl<'a> Parser<'a> {
-    fn from(string: &'a str) -> Self {
-        Self {
-            chars: string.chars(),
-            current: string.chars().next(),
-        }
+    fn new(string: &'a str) -> Self {
+        let mut chars = string.chars();
+        let current = chars.next();
+        Self { chars, current }
     }
 
     fn peek(&self) -> Option<char> {
@@ -20,31 +25,30 @@ impl<'a> Parser<'a> {
     fn advance(&mut self) {
         self.current = self.chars.next();
     }
-}
 
-impl<'a> Parser<'a> {
-    /* from chatgpt */
     fn skip_whitespace(&mut self) {
-        while matches!(self.peek(), Some(' ' | '\n' | '\r' | '\t')) {
+        while let Some(c) = self.peek()
+            && (c.is_whitespace() || c.is_control())
+        {
             self.advance();
         }
     }
 
-    /* from chatgpt */
-    fn expect(&mut self, expected: char) -> Result<(), String> {
+    fn expect(&mut self, excepted: char) {
         self.skip_whitespace();
 
-        if self.peek() == Some(expected) {
+        if Some(excepted) == self.peek() {
             self.advance();
-            Ok(())
         } else {
-            Err(format!("expected '{}'", expected))
+            panic!("expected {}", excepted); /* 临时顶替的panic不代表以后是panic */
         }
+
+        self.skip_whitespace();
     }
 
     fn read_string(&mut self) -> String {
         let mut builder = String::new();
-        self.advance();
+        self.expect('"');
 
         while let Some(ch) = self.peek()
             && ch != '"'
@@ -53,45 +57,76 @@ impl<'a> Parser<'a> {
             self.advance();
         }
 
-        self.advance();
+        self.expect('"');
         builder
     }
 
-    fn read_object(&mut self) {
-        self.expect('}');
+    fn read_json_string(&mut self) -> JsonElement {
+        JsonElement::String(self.read_string())
+    }
 
+    fn read_object(&mut self) -> JsonElement {
+        let mut object = HashMap::new();
+        self.expect('{');
         while let Some(ch) = self.peek()
             && ch != '}'
         {
-            let _key = self.read_string();
+            let key = self.read_string();
             self.expect(':');
-            let _value = self.read_value();
+            let value = self.read_value();
 
-            self.expect(',');
+            if let Some(next) = self.peek()
+                && next != '}'
+            {
+                self.expect(',');
+            }
+            object.insert(key, value);
         }
 
-        self.expect('{');
-
+        self.expect('}');
+        JsonElement::Object(object)
     }
 
-    fn read_value(&mut self) {
+    fn read_identifier(&mut self) -> JsonElement {
+        /* 这里先预留着，给以后null或者bool留 */
+        self.advance();
+        JsonElement::Identifier
+    }
+
+    fn read_value(&mut self) -> JsonElement {
         if let Some(ch) = self.peek() {
             match ch {
-                '"' => {
-                    let value = self.read_string();
-                    println!("{}", value);
-                }
+                '"' => self.read_json_string(),
 
                 '{' => self.read_object(),
 
-                _ => self.advance(),
+                _ => self.read_identifier(),
             }
+        } else {
+            panic!("unexpected EOF"); /* 临时顶替的panic不代表以后是panic */
         }
     }
 }
 
 fn main() {
-    let json: &str = "{\"name\":\"Frish2021\",\"age\":\"16\",\"other\":{\"id\":\"1145141919810\",\"status\":\"writing\"}}";
-    let mut parser = Parser::from(json);
-    parser.read_object()
+    let mut parser = Parser::new(
+        r#"{ "name": "Frish2021", "age": "16", "other": { "id": "1145141919810", "status": "writing" } }"#,
+    );
+    let object = parser.read_object();
+    if let JsonElement::Object(object) = object {
+        let other = &object["other"];
+        let name = &object["name"];
+
+        if let JsonElement::String(name) = name {
+            println!("Name: {}", name);
+        }
+
+        if let JsonElement::Object(other) = other {
+            let id = &other["id"];
+
+            if let JsonElement::String(id) = id {
+                println!("Id: {}", id)
+            }
+        }
+    }
 }
