@@ -1,8 +1,12 @@
 mod parser;
-pub mod utility;
+mod utility;
 
 use std::num::{ParseFloatError, ParseIntError};
-pub use parser::*;
+
+pub fn from_json(str: &str) -> Result<JsonValue, String> {
+    let mut parser = parser::Parser::new(str);
+    parser.read_value()
+}
 
 pub enum JsonValue {
     Null,
@@ -21,7 +25,7 @@ impl JsonNumber {
     pub fn as_f64(&self) -> f64 {
         match self.try_f64() {
             Ok(value) => value,
-            Err(err) => panic!("{}", err)
+            Err(err) => panic!("{}", err),
         }
     }
 
@@ -32,7 +36,7 @@ impl JsonNumber {
     pub fn as_i64(&self) -> i64 {
         match self.try_i64() {
             Ok(value) => value,
-            Err(err) => panic!("{}", err)
+            Err(err) => panic!("{}", err),
         }
     }
 

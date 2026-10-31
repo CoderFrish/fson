@@ -1,11 +1,16 @@
 use fson::JsonValue::{Array, Object, String};
 
-pub mod common;
+const JSON: &str = r#"{
+    "object": {
+        "target": "This is a object content."
+    },
+    "array": ["student0", "student1", "student2"]
+}"#;
 
 #[test]
 fn parse_object_type() {
-    let object = common::parser().read_value();
-    if let Object(map) = object {
+    let object = fson::from_json(JSON);
+    if let Ok(Object(map)) = object {
         let object = &map["object"];
         if let Object(object) = object {
             let target = &object["target"];
@@ -18,8 +23,8 @@ fn parse_object_type() {
 
 #[test]
 fn parse_array_type() {
-    let object = common::parser().read_value();
-    if let Object(map) = object {
+    let object = fson::from_json(JSON);
+    if let Ok(Object(map)) = object {
         let array = &map["array"];
         if let Array(array) = array {
             let value0 = &array[0];
