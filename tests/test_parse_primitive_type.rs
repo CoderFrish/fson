@@ -12,57 +12,93 @@ const JSON: &str = r#"{
 #[test]
 fn parse_string_type() {
     let object = fson::from_json(JSON);
-    if let Ok(Object(map)) = object {
-        let string = &map["string"];
-        if let String(string) = string {
-            assert_eq!(string, "Hello World!!!");
-        }
+    match object {
+        Ok(object) => {
+            if let Object(map) = object {
+                let string = &map["string"];
+                if let String(string) = string {
+                    println!("{}", string);
+                    assert_eq!(string, "Hello World!!!");
+                }
+            }
+        },
+        Err(err) => {
+            panic!("{}", err)
+        },
     }
 }
 
 #[test]
 fn parse_float_type() {
     let object = fson::from_json(JSON);
-    if let Ok(Object(map)) = object {
-        let float = &map["float"];
-        if let Numeric(float) = float {
-            assert_eq!(float.as_f64(), 0.5);
-        }
+    match object {
+        Ok(object) => {
+            if let Object(map) = object {
+                let float = &map["float"];
+                if let Numeric(float) = float {
+                    assert_eq!(float.as_f64(), 0.5);
+                }
+            }
+        },
+        Err(err) => {
+            panic!("{}", err)
+        },
     }
 }
 
 #[test]
 fn parse_int_type() {
     let object = fson::from_json(JSON);
-    if let Ok(Object(map)) = object {
-        let int = &map["int"];
-        if let Numeric(int) = int {
-            assert_eq!(int.as_i64(), 11);
-        }
+    match object {
+        Ok(object) => {
+            if let Object(map) = object {
+                let int = &map["int"];
+                if let Numeric(int) = int {
+                    assert_eq!(int.as_i64(), 11);
+                }
+            }
+        },
+        Err(err) => {
+            panic!("{}", err)
+        },
     }
 }
 
 #[test]
 fn parse_bool_type() {
     let object = fson::from_json(JSON);
-    if let Ok(Object(map)) = object {
-        let bool_true = &map["bool_true"];
-        if let Bool(bool_true) = bool_true {
-            assert!(bool_true)
-        }
+    match object {
+        Ok(object) => {
+            if let Object(map) = object {
+                let bool_true = &map["bool_true"];
+                if let Bool(bool_true) = bool_true {
+                    assert!(bool_true)
+                }
 
-        let bool_false = &map["bool_false"];
-        if let Bool(bool_false) = bool_false {
-            assert!(!bool_false)
-        }
+                let bool_false = &map["bool_false"];
+                if let Bool(bool_false) = bool_false {
+                    assert!(!bool_false)
+                }
+            }
+        },
+        Err(err) => {
+            panic!("{}", err)
+        },
     }
 }
 
 #[test]
 fn parse_null_type() {
     let object = fson::from_json(JSON);
-    if let Ok(Object(map)) = object {
-        let null = &map["null"];
-        assert!(matches!(null, Null));
+    match object {
+        Ok(object) => {
+            if let Object(map) = object {
+                let null = &map["null"];
+                assert!(matches!(null, Null));
+            }
+        },
+        Err(err) => {
+            panic!("{}", err)
+        },
     }
 }
