@@ -1,13 +1,13 @@
 # Fson
 
-全称是 Frish`s Json ，一个由rust编写的轻量json处理工具。
+全称是 Frish`s Json Library ，一个由rust编写的轻量json处理工具。
 
 该项目暂时在施工中...
 
 目前进度
 1. [x] 简单的基础类型解析(包括Object\Array\String\Null\Bool)
-2. [ ] String字符串转义
-3. [ ] 工程文件拆分、补全api、完善错误分析
+2. [ ] String字符串转义（已完成简单转义，unicode还剩下代理对转义）
+3. [ ] 工程文件拆分、补全api、完善错误分析（完成初步的工程文件拆分与基本的错误分析）
 
 未来计划
 

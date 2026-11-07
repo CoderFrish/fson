@@ -1,46 +1,21 @@
+use std::collections::HashMap;
+use crate::parser::Parser;
+
 mod parser;
-mod utility;
+pub mod error;
 
-use std::num::{ParseFloatError, ParseIntError};
-
-pub fn from_json(str: &str) -> Result<JsonValue, String> {
-    let mut parser = parser::Parser::new(str);
-    parser.read_value()
-}
-
+/*  */
+#[derive(Debug, PartialEq)]
 pub enum JsonValue {
-    Null,
-    Bool(bool),
-    Numeric(JsonNumber),
     String(String),
+    Boolean(bool),
+    Null,
+    Numeric(f64),
     Array(Vec<JsonValue>),
-    Object(std::collections::BTreeMap<String, JsonValue>),
+    Object(HashMap<String, JsonValue>),
 }
 
-pub struct JsonNumber {
-    value: String,
-}
-
-impl JsonNumber {
-    pub fn as_f64(&self) -> f64 {
-        match self.try_f64() {
-            Ok(value) => value,
-            Err(err) => panic!("{}", err),
-        }
-    }
-
-    pub fn try_f64(&self) -> Result<f64, ParseFloatError> {
-        self.value.parse::<f64>()
-    }
-
-    pub fn as_i64(&self) -> i64 {
-        match self.try_i64() {
-            Ok(value) => value,
-            Err(err) => panic!("{}", err),
-        }
-    }
-
-    pub fn try_i64(&self) -> Result<i64, ParseIntError> {
-        self.value.parse::<i64>()
-    }
+pub fn parse(json: &str) -> Result<JsonValue, error::JsonError> {
+    let mut parser = Parser::new(json);
+    parser.read_value()
 }
