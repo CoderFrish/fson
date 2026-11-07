@@ -7,7 +7,6 @@ pub enum JsonError {
     UnknownHexChar(char),
     UnknownLiteral(String),
     InvalidUnicode(String),
-    InvalidHexChar(char),
     IncompleteEscape,
     KeyTypeNotString(JsonValue),
     ExpectedSymbol(char, char),

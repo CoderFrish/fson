@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::str::Chars;
 
-use crate::{JsonValue};
-use crate::error::{JsonError};
+use crate::JsonValue;
+use crate::error::JsonError;
 
 pub struct Parser<'a> {
     chars: Chars<'a>,
@@ -124,8 +124,7 @@ impl<'a> Parser<'a> {
         while let Some(ch) = self.peek()
             && count < 4
         {
-            /* 这里3减去计数是因为最低16进制的第一位在右边，而解析器是从左读的，所以需要3减计数取反 */
-            result = result + (Self::hex_char_to_digit(ch)? * 16u32.pow(3 - count));
+            result = result * 16 + Self::hex_char_to_digit(ch)?;
 
             self.advance();
             count += 1;
@@ -134,7 +133,7 @@ impl<'a> Parser<'a> {
         /* 代理对的取值范围 */
         let high_surrogate = 55296..=56319u32;
         let low_surrogate = 56320..=57343u32;
-        if !(low_surrogate.contains(&result) && high_surrogate.contains(&result)) {
+        if !(low_surrogate.contains(&result) || high_surrogate.contains(&result)) {
             unsafe {
                 /* 这里为什么不检查，因为我已经确定这里result是合法的unicode编码 */
                 Ok(char::from_u32_unchecked(result))
@@ -146,10 +145,6 @@ impl<'a> Parser<'a> {
     }
 
     fn hex_char_to_digit(ch: char) -> Result<u32, JsonError> {
-        if !ch.is_ascii_hexdigit() {
-            return Err(JsonError::InvalidHexChar(ch));
-        }
-
         match ch {
             '0'..='9' => Ok(ch as u32 - '0' as u32),
             'a'..='f' => Ok(ch as u32 - 'a' as u32 + 10),
@@ -160,9 +155,9 @@ impl<'a> Parser<'a> {
     }
     /* 转义部分 end - 写的有点不行，而且unicode的转义部分还没完善 */
 
-    fn skip_format_symbol(&mut self) -> Result<(), JsonError> {
+    fn skip_whitespace(&mut self) -> Result<(), JsonError> {
         while let Some(ch) = self.peek()
-            && (ch.is_whitespace() || ['\n', '\t'].contains(&ch))
+            && ch.is_whitespace()
         {
             self.advance();
         }
@@ -176,7 +171,7 @@ impl<'a> Parser<'a> {
             None => return Err(JsonError::EOF),
             Some(',') => {
                 self.expect(',')?;
-                self.skip_format_symbol()?;
+                self.skip_whitespace()?;
 
                 match self.peek() {
                     None => return Err(JsonError::EOF),
@@ -199,25 +194,25 @@ impl<'a> Parser<'a> {
     fn read_object(&mut self) -> Result<HashMap<String, JsonValue>, JsonError> {
         let mut object_map = HashMap::new();
         self.expect('{')?;
-        self.skip_format_symbol()?;
+        self.skip_whitespace()?;
 
         while let Some(ch) = self.peek()
             && ch != '}'
         {
-            self.skip_format_symbol()?;
+            self.skip_whitespace()?;
             let key = self.read_string()?;
-            self.skip_format_symbol()?;
+            self.skip_whitespace()?;
             self.expect(':')?;
-            self.skip_format_symbol()?;
+            self.skip_whitespace()?;
             let value = self.read_value()?;
-            self.skip_format_symbol()?;
+            self.skip_whitespace()?;
 
             self.expect_entry_separator('}')?;
 
             object_map.insert(key, value);
         }
 
-        self.skip_format_symbol()?;
+        self.skip_whitespace()?;
         self.expect('}')?;
         Ok(object_map)
     }
@@ -225,19 +220,19 @@ impl<'a> Parser<'a> {
     fn read_array(&mut self) -> Result<Vec<JsonValue>, JsonError> {
         let mut array = Vec::new();
         self.expect('[')?;
-        self.skip_format_symbol()?;
+        self.skip_whitespace()?;
 
         while let Some(ch) = self.peek()
             && ch != ']'
         {
-            self.skip_format_symbol()?;
+            self.skip_whitespace()?;
             array.push(self.read_value()?);
-            self.skip_format_symbol()?;
+            self.skip_whitespace()?;
 
             self.expect_entry_separator(']')?;
         }
 
-        self.skip_format_symbol()?;
+        self.skip_whitespace()?;
         self.expect(']')?;
         Ok(array)
     }
@@ -273,7 +268,7 @@ impl<'a> Parser<'a> {
 
     /* 临时先 pub 后面设计api的时候再考虑是否 private */
     pub fn read_value(&mut self) -> Result<JsonValue, JsonError> {
-        self.skip_format_symbol()?;
+        self.skip_whitespace()?;
 
         match self.peek() {
             None => Err(JsonError::EOF),
