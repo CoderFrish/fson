@@ -4,6 +4,10 @@ use crate::JsonValue;
 #[derive(Debug)]
 pub enum JsonError {
     EOF,
+    InvalidSurrogate,
+    InvalidStringChar(char),
+    InvalidUnicodeSize,
+    IncompleteSurrogate,
     UnknownHexChar(char),
     UnknownLiteral(String),
     InvalidUnicode(String),

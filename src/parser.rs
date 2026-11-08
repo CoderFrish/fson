@@ -11,7 +11,9 @@ pub struct Parser<'a> {
 
 /// 这里以后会处理的一些问题，先放着作为todo
 /// 继续完善数字的解析与处理
-/// 完善关于unicode的代理对处理
+/// 添加递归深度检查，防止大量递归出现导致进程出事
+/// 搞定处理 BOM 的逻辑
+/// 完成基础生产测试
 impl<'a> Parser<'a> {
     fn peek(&self) -> Option<char> {
         self.current
@@ -51,6 +53,8 @@ impl<'a> Parser<'a> {
         {
             if ch == '\\' {
                 self.process_escape(&mut builder)?;
+            } else if (ch as u32) < 0x20 {
+                return Err(JsonError::InvalidStringChar(ch));
             } else {
                 builder.push(ch);
                 self.advance();
@@ -118,7 +122,7 @@ impl<'a> Parser<'a> {
     }
 
     /* 重新编写了 read_unicode 的逻辑，为以后代理对做准备 */
-    fn read_unicode(&mut self) -> Result<char, JsonError> {
+    fn read_unicode_hex(&mut self) -> Result<u32, JsonError> {
         let mut count: u32 = 0;
         let mut result: u32 = 0;
         while let Some(ch) = self.peek()
@@ -130,18 +134,56 @@ impl<'a> Parser<'a> {
             count += 1;
         }
 
+        if count != 4 {
+            return Err(JsonError::InvalidUnicodeSize);
+        }
+
+        Ok(result)
+    }
+
+    fn read_unicode(&mut self) -> Result<char, JsonError> {
+        let current_unicode = self.read_unicode_hex()?;
+
         /* 代理对的取值范围 */
         let high_surrogate = 55296..=56319u32;
         let low_surrogate = 56320..=57343u32;
-        if !(low_surrogate.contains(&result) || high_surrogate.contains(&result)) {
-            unsafe {
-                /* 这里为什么不检查，因为我已经确定这里result是合法的unicode编码 */
-                Ok(char::from_u32_unchecked(result))
+        if high_surrogate.contains(&current_unicode) {
+            match self.peek() {
+                None => Err(JsonError::EOF),
+
+                Some('\\') => {
+                    self.advance(); /* skip \ */
+                    match self.peek() {
+                        None => Err(JsonError::EOF),
+                        Some('u') => {
+                            self.advance(); /* skip u */
+                            let next_unicode = self.read_unicode_hex()?;
+
+                            if !low_surrogate.contains(&next_unicode) {
+                                return Err(JsonError::InvalidSurrogate)
+                            }
+
+                            Ok(Self::marge_surrogates(next_unicode, current_unicode)?)
+                        }
+
+                        Some(_) => Err(JsonError::IncompleteSurrogate),
+                    }
+                }
+
+                /* 这里是处理不完成缓冲对 */
+                Some(_) => Err(JsonError::IncompleteSurrogate),
             }
+        } else if low_surrogate.contains(&current_unicode) {
+            Err(JsonError::IncompleteSurrogate)
         } else {
-            /* 这里留着以后写代理对，Frish这下可惨了 */
-            Err(JsonError::InvalidUnicode(format!("{:x}", result)))
+            char::from_u32(current_unicode)
+                .ok_or(JsonError::InvalidUnicode(format!("{:x}", current_unicode)))
         }
+    }
+
+    fn marge_surrogates(low: u32, high: u32) -> Result<char, JsonError> {
+        let cp = 0x1_0000 + ((high - 0xD800) << 10) + (low - 0xDC00);
+        char::from_u32(cp).ok_or(JsonError::InvalidUnicode(format!("{:x}, {:x}", high, low)))
     }
 
     fn hex_char_to_digit(ch: char) -> Result<u32, JsonError> {
@@ -155,14 +197,12 @@ impl<'a> Parser<'a> {
     }
     /* 转义部分 end - 写的有点不行，而且unicode的转义部分还没完善 */
 
-    fn skip_whitespace(&mut self) -> Result<(), JsonError> {
+    fn skip_whitespace(&mut self) {
         while let Some(ch) = self.peek()
-            && ch.is_whitespace()
+            && ['\t', '\r', '\n', ' '].contains(&ch)
         {
             self.advance();
         }
-
-        Ok(())
     }
 
     fn expect_entry_separator(&mut self, end_flag: char) -> Result<(), JsonError> {
@@ -171,7 +211,7 @@ impl<'a> Parser<'a> {
             None => return Err(JsonError::EOF),
             Some(',') => {
                 self.expect(',')?;
-                self.skip_whitespace()?;
+                self.skip_whitespace();
 
                 match self.peek() {
                     None => return Err(JsonError::EOF),
@@ -194,25 +234,25 @@ impl<'a> Parser<'a> {
     fn read_object(&mut self) -> Result<HashMap<String, JsonValue>, JsonError> {
         let mut object_map = HashMap::new();
         self.expect('{')?;
-        self.skip_whitespace()?;
+        self.skip_whitespace();
 
         while let Some(ch) = self.peek()
             && ch != '}'
         {
-            self.skip_whitespace()?;
+            self.skip_whitespace();
             let key = self.read_string()?;
-            self.skip_whitespace()?;
+            self.skip_whitespace();
             self.expect(':')?;
-            self.skip_whitespace()?;
+            self.skip_whitespace();
             let value = self.read_value()?;
-            self.skip_whitespace()?;
+            self.skip_whitespace();
 
             self.expect_entry_separator('}')?;
 
             object_map.insert(key, value);
         }
 
-        self.skip_whitespace()?;
+        self.skip_whitespace();
         self.expect('}')?;
         Ok(object_map)
     }
@@ -220,24 +260,24 @@ impl<'a> Parser<'a> {
     fn read_array(&mut self) -> Result<Vec<JsonValue>, JsonError> {
         let mut array = Vec::new();
         self.expect('[')?;
-        self.skip_whitespace()?;
+        self.skip_whitespace();
 
         while let Some(ch) = self.peek()
             && ch != ']'
         {
-            self.skip_whitespace()?;
+            self.skip_whitespace();
             array.push(self.read_value()?);
-            self.skip_whitespace()?;
+            self.skip_whitespace();
 
             self.expect_entry_separator(']')?;
         }
 
-        self.skip_whitespace()?;
+        self.skip_whitespace();
         self.expect(']')?;
         Ok(array)
     }
 
-    fn is_literal(&self, ch: char) -> bool {
+    fn is_literal_char(&self, ch: char) -> bool {
         ch.is_ascii_alphanumeric() || ['+', '-', '_', '.'].contains(&ch)
     }
 
@@ -245,7 +285,7 @@ impl<'a> Parser<'a> {
         let mut builder = String::new();
 
         while let Some(ch) = self.peek()
-            && self.is_literal(ch)
+            && self.is_literal_char(ch)
         {
             builder.push(ch);
             self.advance();
@@ -259,16 +299,21 @@ impl<'a> Parser<'a> {
             Ok(JsonValue::Null)
         } else {
             /* 这里数字的解析与判断以后再来写 */
-            match builder.parse::<f64>() {
-                Ok(result) => Ok(JsonValue::Numeric(result)),
-                Err(_) => Err(JsonError::UnknownLiteral(builder)),
-            }
+            Ok(self.read_numeric(&builder)?)
+        }
+    }
+
+    /* 这里数字处理等我秋假回来再研究，完成后对他进行生产化测试 */
+    fn read_numeric(&mut self, builder: &String) -> Result<JsonValue, JsonError> {
+        match builder.parse::<f64>() {
+            Ok(result) => Ok(JsonValue::Numeric(result)),
+            Err(_) => Err(JsonError::UnknownLiteral(builder.to_owned())),
         }
     }
 
     /* 临时先 pub 后面设计api的时候再考虑是否 private */
     pub fn read_value(&mut self) -> Result<JsonValue, JsonError> {
-        self.skip_whitespace()?;
+        self.skip_whitespace();
 
         match self.peek() {
             None => Err(JsonError::EOF),
@@ -279,7 +324,7 @@ impl<'a> Parser<'a> {
 
                 '[' => Ok(JsonValue::Array(self.read_array()?)),
 
-                _ if self.is_literal(ch) => self.read_literal(),
+                _ if self.is_literal_char(ch) => self.read_literal(),
 
                 _ => Err(JsonError::UnexpectedSymbol(ch)),
             },

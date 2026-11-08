@@ -14,9 +14,9 @@ fn test_string() -> Result<(), JsonError> {
 
 #[test]
 fn test_string_with_escape() -> Result<(), JsonError> {
-    let string = r#""\\u0041 Hello World!!!, I say \"Hello\" \\ \u4E2D文""#;
+    let string = r#""\uD83D\uDE00\\u0041 Hello World!!!, I say \"Hello\" \\ \u4E2D文""#;
     let value = fson::parse(string)?;
-    let expected = "\\u0041 Hello World!!!, I say \"Hello\" \\ 中文".to_owned();
+    let expected = "😀\\u0041 Hello World!!!, I say \"Hello\" \\ 中文".to_owned();
 
     assert_eq!(value, JsonValue::String(expected));
 
