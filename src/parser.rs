@@ -1,63 +1,94 @@
-use std::collections::HashMap;
+use crate::error::{JsonError, JsonResult, SyntaxParseError};
+use crate::value::JsonValue;
+use std::collections::BTreeMap;
+use std::ops::RangeInclusive;
 use std::str::Chars;
 
-use crate::JsonValue;
-use crate::error::JsonError;
-
-pub struct Parser<'a> {
+/* 编写顺序 String类型 -> 标识符类型 -> Object类型 -> Array类型 -> Number类型 -> 完善部分 */
+/* 完善部分包括：递归深度安全等等... */
+/* 目前的目标是：编写Number类型 */
+struct Parser<'a> {
     chars: Chars<'a>,
     current: Option<char>,
 }
 
-/// 这里以后会处理的一些问题，先放着作为todo
-/// 继续完善数字的解析与处理
-/// 添加递归深度检查，防止大量递归出现导致进程出事
-/// 搞定处理 BOM 的逻辑
-/// 完成基础生产测试
+const WHITESPACE: &[char] = &[' ', '\t', '\n', '\r'];
+const HIGH_SURROGATE: RangeInclusive<u32> = 0xD800..=0xDBFF;
+const LOW_SURROGATE: RangeInclusive<u32> = 0xDC00..=0xDFFF;
+
 impl<'a> Parser<'a> {
-    fn peek(&self) -> Option<char> {
-        self.current
+    fn new(json: &'a str) -> Self {
+        let mut chars = json.chars();
+        let current = chars.next();
+        Self { chars, current }
     }
 
     fn advance(&mut self) {
         self.current = self.chars.next();
     }
 
-    /* 临时先 pub 后面设计api的时候再考虑是否 private */
-    pub fn new(json: &'a str) -> Self {
-        let mut chars = json.chars();
-        let current = chars.next();
-        Self { chars, current }
+    fn peek(&self) -> Option<char> {
+        self.current
     }
 
-    fn expect(&mut self, expected: char) -> Result<(), JsonError> {
-        match self.peek() {
-            None => Err(JsonError::EOF),
-            Some(ch) => {
-                if ch == expected {
-                    self.advance();
-                    Ok(())
-                } else {
-                    Err(JsonError::ExpectedSymbol(ch, expected))
-                }
+    fn skip_whitespace(&mut self) {
+        loop {
+            match self.peek() {
+                Some(c) if WHITESPACE.contains(&c) => self.advance(),
+                _ => break,
             }
         }
     }
 
-    fn read_string(&mut self) -> Result<String, JsonError> {
+    fn expect(&mut self, ch: char) -> JsonResult<()> {
+        match self.peek() {
+            Some(peeked) if peeked == ch => {
+                self.advance();
+            }
+
+            /* 第一个是实际情况，第二个是在正确情况下应该的情况 */
+            Some(peeked) => {
+                return Err(JsonError::SyntaxParseError(
+                    SyntaxParseError::ExpectedCharacter(peeked, ch),
+                ));
+            }
+
+            None => return Err(JsonError::EofError),
+        };
+
+        Ok(())
+    }
+
+    /* 这里是读取String类型，返回String因为是一边可能是key的String，一边可能是value的String */
+    fn read_string(&mut self) -> JsonResult<String> {
         let mut builder = String::new();
         self.expect('"')?;
 
-        while let Some(ch) = self.peek()
-            && ch != '"'
-        {
-            if ch == '\\' {
-                self.process_escape(&mut builder)?;
-            } else if (ch as u32) < 0x20 {
-                return Err(JsonError::InvalidStringChar(ch));
-            } else {
-                builder.push(ch);
-                self.advance();
+        /* 这里我老想用新特性的，但是考虑到低版本的兼容性，那直接用这个了 */
+        loop {
+            match self.peek() {
+                /* 关于提前退出和到下引号的退出 */
+                None => return Err(JsonError::EofError),
+                Some('"') => break,
+
+                /* 以下的是关于转义的东西 */
+                Some('\\') => {
+                    self.advance(); /* 跳过转义符号 */
+                    let ch = self.escape()?;
+                    builder.push(ch);
+                }
+
+                Some(ch) if (ch as u32) < 0x20 => {
+                    return Err(JsonError::SyntaxParseError(
+                        SyntaxParseError::UnescapedCharacter(ch as u32),
+                    ));
+                }
+
+                /* 如果不是转义的话就用以下的方案 */
+                Some(ch) => {
+                    self.advance();
+                    builder.push(ch)
+                }
             }
         }
 
@@ -65,180 +96,167 @@ impl<'a> Parser<'a> {
         Ok(builder)
     }
 
-    /* 转义部分 start - 写的有点不行，而且unicode的转义部分还没完善 */
-    fn process_escape(&mut self, builder: &mut String) -> Result<(), JsonError> {
-        /* 跳过转义符 */
-        self.advance();
+    fn escape(&mut self) -> JsonResult<char> {
+        // 这里都是通用格式 跳过 + 返回对应的字符
 
-        /* 处理转义标志 */
         match self.peek() {
-            None => return Err(JsonError::EOF),
-            Some(ch) => match ch {
-                '"' => {
-                    builder.push('"');
-                    self.advance();
-                }
+            /* 基础转义 - start */
+            Some('\\') => {
+                self.advance();
+                Ok('\\')
+            }
+            Some('"') => {
+                self.advance();
+                Ok('"')
+            }
+            Some('b') => {
+                self.advance();
+                Ok('\x08')
+            }
+            Some('f') => {
+                self.advance();
+                Ok('\x0c')
+            }
+            Some('n') => {
+                self.advance();
+                Ok('\n')
+            }
+            Some('r') => {
+                self.advance();
+                Ok('\r')
+            }
+            Some('t') => {
+                self.advance();
+                Ok('\t')
+            }
+            /* 基础转义 - end */
 
-                '\\' => {
-                    builder.push('\\');
-                    self.advance();
-                }
+            /* 下面是关于unicode转义的处理 */
+            Some('u') => {
+                self.advance();
+                self.unicode()
+            }
 
-                'n' => {
-                    builder.push('\n');
-                    self.advance();
-                }
-
-                'r' => {
-                    builder.push('\r');
-                    self.advance();
-                }
-
-                't' => {
-                    builder.push('\t');
-                    self.advance();
-                }
-
-                'b' => {
-                    builder.push('\x08');
-                    self.advance();
-                }
-
-                'f' => {
-                    builder.push('\x0c');
-                    self.advance();
-                }
-
-                'u' => {
-                    self.advance(); /* 跳过 u */
-                    builder.push(self.read_unicode()?);
-                }
-
-                _ => return Err(JsonError::IncompleteEscape),
-            },
-        };
-
-        Ok(())
+            None => Err(JsonError::EofError),
+            Some(ch) => Err(JsonError::SyntaxParseError(
+                SyntaxParseError::InvalidEscapeSequence(ch),
+            )),
+        }
     }
 
-    /* 重新编写了 read_unicode 的逻辑，为以后代理对做准备 */
-    fn read_unicode_hex(&mut self) -> Result<u32, JsonError> {
-        let mut count: u32 = 0;
+    /* unicode处理辅助函数 - start */
+    fn unicode_hex(&mut self) -> JsonResult<u32> {
         let mut result: u32 = 0;
-        while let Some(ch) = self.peek()
-            && count < 4
-        {
-            result = result * 16 + Self::hex_char_to_digit(ch)?;
 
-            self.advance();
-            count += 1;
-        }
+        for _ in 0..4 {
+            match self.peek() {
+                Some(ch) => {
+                    let hex = ch.to_digit(16).ok_or(JsonError::SyntaxParseError(
+                        SyntaxParseError::InvalidHexCharacter(ch),
+                    ))?;
+                    result = result * 16 + hex;
 
-        if count != 4 {
-            return Err(JsonError::InvalidUnicodeSize);
+                    self.advance();
+                }
+
+                None => return Err(JsonError::EofError),
+            }
         }
 
         Ok(result)
     }
 
-    fn read_unicode(&mut self) -> Result<char, JsonError> {
-        let current_unicode = self.read_unicode_hex()?;
+    /* 主要的unicode处理 */
+    fn unicode(&mut self) -> JsonResult<char> {
+        let current_hex = self.unicode_hex()?;
 
-        /* 代理对的取值范围 */
-        let high_surrogate = 55296..=56319u32;
-        let low_surrogate = 56320..=57343u32;
-        if high_surrogate.contains(&current_unicode) {
+        if HIGH_SURROGATE.contains(&current_hex) {
             match self.peek() {
-                None => Err(JsonError::EOF),
-
+                None => Err(JsonError::EofError),
                 Some('\\') => {
-                    self.advance(); /* skip \ */
-                    match self.peek() {
-                        None => Err(JsonError::EOF),
-                        Some('u') => {
-                            self.advance(); /* skip u */
-                            let next_unicode = self.read_unicode_hex()?;
+                    self.advance();
 
-                            if !low_surrogate.contains(&next_unicode) {
-                                return Err(JsonError::InvalidSurrogate)
+                    match self.peek() {
+                        None => Err(JsonError::EofError),
+                        Some('u') => {
+                            self.advance();
+                            let next_hex = self.unicode_hex()?;
+                            if !LOW_SURROGATE.contains(&next_hex) {
+                                return Err(JsonError::SyntaxParseError(
+                                    SyntaxParseError::InvalidUnicodeSequence,
+                                ));
                             }
 
-                            Ok(Self::marge_surrogates(next_unicode, current_unicode)?)
+                            let unicode =
+                                0x1_0000 + ((current_hex - 0xD800) << 10) + (next_hex - 0xDC00);
+                            char::from_u32(unicode).ok_or(JsonError::SyntaxParseError(
+                                SyntaxParseError::InvalidUnicodeSequence,
+                            ))
                         }
-
-                        Some(_) => Err(JsonError::IncompleteSurrogate),
+                        Some(_) => Err(JsonError::SyntaxParseError(
+                            SyntaxParseError::InvalidUnicodeSequence,
+                        )),
                     }
                 }
-
-                /* 这里是处理不完成缓冲对 */
-                Some(_) => Err(JsonError::IncompleteSurrogate),
+                Some(_) => Err(JsonError::SyntaxParseError(
+                    SyntaxParseError::InvalidUnicodeSequence,
+                )),
             }
-        } else if low_surrogate.contains(&current_unicode) {
-            Err(JsonError::IncompleteSurrogate)
+        } else if LOW_SURROGATE.contains(&current_hex) {
+            Err(JsonError::SyntaxParseError(
+                SyntaxParseError::InvalidSurrogateSequence,
+            ))
         } else {
-            char::from_u32(current_unicode)
-                .ok_or(JsonError::InvalidUnicode(format!("{:x}", current_unicode)))
+            char::from_u32(current_hex).ok_or(JsonError::SyntaxParseError(
+                SyntaxParseError::InvalidUnicodeSequence,
+            ))
         }
     }
+    /* unicode处理辅助函数 - end */
 
-    fn marge_surrogates(low: u32, high: u32) -> Result<char, JsonError> {
-        let cp = 0x1_0000 + ((high - 0xD800) << 10) + (low - 0xDC00);
-        char::from_u32(cp).ok_or(JsonError::InvalidUnicode(format!("{:x}, {:x}", high, low)))
+    fn read_true(&mut self) -> JsonResult<JsonValue> {
+        self.expect('t')?;
+        self.expect('r')?;
+        self.expect('u')?;
+        self.expect('e')?;
+
+        Ok(JsonValue::Boolean(true))
     }
 
-    fn hex_char_to_digit(ch: char) -> Result<u32, JsonError> {
-        match ch {
-            '0'..='9' => Ok(ch as u32 - '0' as u32),
-            'a'..='f' => Ok(ch as u32 - 'a' as u32 + 10),
-            'A'..='F' => Ok(ch as u32 - 'A' as u32 + 10),
+    fn read_false(&mut self) -> JsonResult<JsonValue> {
+        self.expect('f')?;
+        self.expect('a')?;
+        self.expect('l')?;
+        self.expect('s')?;
+        self.expect('e')?;
 
-            _ => Err(JsonError::UnknownHexChar(ch)),
-        }
-    }
-    /* 转义部分 end - 写的有点不行，而且unicode的转义部分还没完善 */
-
-    fn skip_whitespace(&mut self) {
-        while let Some(ch) = self.peek()
-            && ['\t', '\r', '\n', ' '].contains(&ch)
-        {
-            self.advance();
-        }
+        Ok(JsonValue::Boolean(false))
     }
 
-    fn expect_entry_separator(&mut self, end_flag: char) -> Result<(), JsonError> {
-        /* 处理逗号逻辑 - start - 有点屎，但是还行 */
-        match self.peek() {
-            None => return Err(JsonError::EOF),
-            Some(',') => {
-                self.expect(',')?;
-                self.skip_whitespace();
+    fn read_null(&mut self) -> JsonResult<JsonValue> {
+        self.expect('n')?;
+        self.expect('u')?;
+        self.expect('l')?;
+        self.expect('l')?;
 
-                match self.peek() {
-                    None => return Err(JsonError::EOF),
-                    Some(ch) => {
-                        if ch == end_flag {
-                            return Err(JsonError::UnexpectedSymbol(','));
-                        }
-                    }
-                }
-            }
-
-            Some(ch) if ch == end_flag => return Ok(()),
-
-            Some(ch) => return Err(JsonError::ExpectedSymbol(ch, ',')),
-        }
-        /* 处理逗号逻辑 - end */
-        Ok(())
+        Ok(JsonValue::Null)
     }
 
-    fn read_object(&mut self) -> Result<HashMap<String, JsonValue>, JsonError> {
-        let mut object_map = HashMap::new();
+    fn read_object(&mut self) -> JsonResult<JsonValue> {
+        let mut object = BTreeMap::new();
         self.expect('{')?;
         self.skip_whitespace();
 
-        while let Some(ch) = self.peek()
-            && ch != '}'
-        {
+        if self.peek() == Some('}') {
+            self.expect('}')?; /* 如果是 空 对象的话就提前返回 Map */
+            return Ok(JsonValue::Object(object));
+        }
+
+        loop {
+            if self.peek() == None {
+                return Err(JsonError::EofError);
+            }
+
             self.skip_whitespace();
             let key = self.read_string()?;
             self.skip_whitespace();
@@ -247,87 +265,375 @@ impl<'a> Parser<'a> {
             let value = self.read_value()?;
             self.skip_whitespace();
 
-            self.expect_entry_separator('}')?;
+            object.insert(key, value);
 
-            object_map.insert(key, value);
+            match self.peek() {
+                None => return Err(JsonError::EofError),
+
+                Some('}') => break,
+
+                Some(',') => {
+                    self.advance(); /* 跳过 , */
+                    self.skip_whitespace();
+
+                    match self.peek() {
+                        None => return Err(JsonError::EofError),
+
+                        Some('}') => {
+                            return Err(JsonError::SyntaxParseError(
+                                SyntaxParseError::UnexpectedCharacter(','),
+                            ));
+                        }
+
+                        Some(_) => (),
+                    }
+                }
+
+                Some(ch) => {
+                    return Err(JsonError::SyntaxParseError(
+                        SyntaxParseError::UnexpectedCharacter(ch),
+                    ));
+                }
+            }
         }
 
         self.skip_whitespace();
         self.expect('}')?;
-        Ok(object_map)
+        Ok(JsonValue::Object(object))
     }
 
-    fn read_array(&mut self) -> Result<Vec<JsonValue>, JsonError> {
+    fn read_array(&mut self) -> JsonResult<JsonValue> {
         let mut array = Vec::new();
         self.expect('[')?;
         self.skip_whitespace();
 
-        while let Some(ch) = self.peek()
-            && ch != ']'
-        {
+        if self.peek() == Some(']') {
+            self.expect(']')?;
+            return Ok(JsonValue::Array(array));
+        }
+
+        loop {
+            if self.peek() == None {
+                return Err(JsonError::EofError);
+            }
+
             self.skip_whitespace();
-            array.push(self.read_value()?);
+            let value = self.read_value()?;
             self.skip_whitespace();
 
-            self.expect_entry_separator(']')?;
+            array.push(value);
+
+            match self.peek() {
+                None => return Err(JsonError::EofError),
+
+                Some(']') => break,
+
+                Some(',') => {
+                    self.advance(); /* 跳过 , */
+                    self.skip_whitespace();
+
+                    match self.peek() {
+                        None => return Err(JsonError::EofError),
+
+                        Some(']') => {
+                            return Err(JsonError::SyntaxParseError(
+                                SyntaxParseError::UnexpectedCharacter(','),
+                            ));
+                        }
+
+                        Some(_) => (),
+                    }
+                }
+
+                Some(ch) => {
+                    return Err(JsonError::SyntaxParseError(
+                        SyntaxParseError::UnexpectedCharacter(ch),
+                    ));
+                }
+            }
         }
 
         self.skip_whitespace();
         self.expect(']')?;
-        Ok(array)
+        Ok(JsonValue::Array(array))
     }
 
-    fn is_literal_char(&self, ch: char) -> bool {
-        ch.is_ascii_alphanumeric() || ['+', '-', '_', '.'].contains(&ch)
-    }
-
-    fn read_literal(&mut self) -> Result<JsonValue, JsonError> {
-        let mut builder = String::new();
-
-        while let Some(ch) = self.peek()
-            && self.is_literal_char(ch)
-        {
-            builder.push(ch);
-            self.advance();
-        }
-
-        if builder == "true" {
-            Ok(JsonValue::Boolean(true))
-        } else if builder == "false" {
-            Ok(JsonValue::Boolean(false))
-        } else if builder == "null" {
-            Ok(JsonValue::Null)
-        } else {
-            /* 这里数字的解析与判断以后再来写 */
-            Ok(self.read_numeric(&builder)?)
-        }
-    }
-
-    /* 这里数字处理等我秋假回来再研究，完成后对他进行生产化测试 */
-    fn read_numeric(&mut self, builder: &String) -> Result<JsonValue, JsonError> {
-        match builder.parse::<f64>() {
-            Ok(result) => Ok(JsonValue::Numeric(result)),
-            Err(_) => Err(JsonError::UnknownLiteral(builder.to_owned())),
-        }
-    }
-
-    /* 临时先 pub 后面设计api的时候再考虑是否 private */
-    pub fn read_value(&mut self) -> Result<JsonValue, JsonError> {
-        self.skip_whitespace();
-
+    fn read_value(&mut self) -> JsonResult<JsonValue> {
         match self.peek() {
-            None => Err(JsonError::EOF),
-            Some(ch) => match ch {
-                '"' => Ok(JsonValue::String(self.read_string()?)),
+            Some('"') => Ok(JsonValue::String(self.read_string()?)),
 
-                '{' => Ok(JsonValue::Object(self.read_object()?)),
+            Some('t') => self.read_true(),
 
-                '[' => Ok(JsonValue::Array(self.read_array()?)),
+            Some('f') => self.read_false(),
 
-                _ if self.is_literal_char(ch) => self.read_literal(),
+            Some('n') => self.read_null(),
 
-                _ => Err(JsonError::UnexpectedSymbol(ch)),
+            Some('{') => self.read_object(),
+
+            Some('[') => self.read_array(),
+
+            Some(ch) => Err(JsonError::SyntaxParseError(
+                SyntaxParseError::UnexpectedCharacter(ch),
+            )),
+
+            None => Err(JsonError::EofError),
+        }
+    }
+}
+
+/* 这里创建一个辅助创建 Parser 的函数，来阻止读取完主要内容后还有意外的多余内容 */
+pub fn json(json: &str) -> JsonResult<JsonValue> {
+    /* 创建parser实例 */
+    let mut parser = Parser::new(json);
+
+    /* 这里跳过头空白和尾空白，中间读取json值 */
+    parser.skip_whitespace();
+    let result = parser.read_value()?;
+    parser.skip_whitespace();
+
+    /* 判断是否还能读取，如果能那就是还有意外内容 */
+    if parser.peek().is_some() {
+        return Err(JsonError::SyntaxParseError(
+            SyntaxParseError::UnexpectedContent,
+        ));
+    }
+
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::error::JsonResult;
+    use crate::parser::json;
+    use crate::value::JsonValue;
+
+    #[test]
+    fn test_numeric() -> JsonResult<()> {
+        // let result = json("+123")?; /* 前导 + 错误 */
+        // json("534235a")?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_array() -> JsonResult<()> {
+        let result = json(r#"[]"#)?;
+        assert!(matches!(result, JsonValue::Array(ref o) if o.is_empty()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_array_with_whitespace() -> JsonResult<()> {
+        let result = json(r#"[   ]"#)?;
+        assert!(matches!(result, JsonValue::Array(ref o) if o.is_empty()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_array() -> JsonResult<()> {
+        let result = json(r#"[ [true, true], [false, false] ]"#)?;
+        match result {
+            JsonValue::Array(array) => {
+                match &array[0] {
+                    JsonValue::Array(array0) => {
+                        for element in array0 {
+                            assert!(matches!(element, JsonValue::Boolean(true)));
+                        }
+                    }
+                    _ => panic!("failed to test."),
+                }
+
+                match &array[1] {
+                    JsonValue::Array(array1) => {
+                        for element in array1 {
+                            assert!(matches!(element, JsonValue::Boolean(false)));
+                        }
+                    }
+                    _ => panic!("failed to test."),
+                }
+            }
+            _ => panic!("failed to test."),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_array_trailing_comma_should_fail() {
+        assert!(json(r#"[ true, ]"#).is_err());
+        assert!(json(r#"[ true,   ]"#).is_err());
+    }
+
+    #[test]
+    fn test_array() -> JsonResult<()> {
+        let result = json(
+            r#"
+        [
+            true,
+            false
+        ]
+        "#,
+        )?;
+
+        match result {
+            JsonValue::Array(array) => {
+                assert!(matches!(&array[0], &JsonValue::Boolean(true)));
+                assert!(matches!(&array[1], &JsonValue::Boolean(false)));
+            }
+            _ => panic!("failed to test."),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_object() -> JsonResult<()> {
+        let result = json(r#"{}"#)?;
+        assert!(matches!(result, JsonValue::Object(ref o) if o.is_empty()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_object_with_whitespace() -> JsonResult<()> {
+        let result = json(r#"{   }"#)?;
+        assert!(matches!(result, JsonValue::Object(ref o) if o.is_empty()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_object() -> JsonResult<()> {
+        let result = json(r#"{ "a": { "b": true } }"#)?;
+        match result {
+            JsonValue::Object(object) => match &object["a"] {
+                JsonValue::Object(inner) => {
+                    assert!(matches!(inner["b"], JsonValue::Boolean(true)));
+                }
+                _ => panic!("failed to test."),
             },
+            _ => panic!("failed to test."),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_object_trailing_comma_should_fail() {
+        assert!(json(r#"{ "a": true, }"#).is_err());
+        assert!(json(r#"{ "a": true,   }"#).is_err());
+    }
+
+    #[test]
+    fn test_object() -> JsonResult<()> {
+        let result = json(
+            r#"
+        {
+            "message": "Hello World!!!",
+            "opening": true
+        }
+        "#,
+        )?;
+
+        match result {
+            JsonValue::Object(object) => {
+                let message = &object["message"];
+                match message {
+                    JsonValue::String(s) => assert_eq!(s, "Hello World!!!"),
+                    _ => panic!("failed to test."),
+                }
+
+                let opening = &object["opening"];
+                assert!(matches!(opening, &JsonValue::Boolean(true)));
+            }
+            _ => panic!("failed to test."),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_boolean_true() -> JsonResult<()> {
+        /* 测试基础unicode转义 String 类型解析 */
+        let result = json(r#"true"#)?;
+        assert!(matches!(result, JsonValue::Boolean(true)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_boolean_false() -> JsonResult<()> {
+        let result = json(r#"false"#)?;
+        assert!(matches!(result, JsonValue::Boolean(false)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_boolean_null() -> JsonResult<()> {
+        let result = json(r#"null"#)?;
+        assert!(matches!(result, JsonValue::Null));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_string_parse_with_based_unicode_escape_surrogate() -> JsonResult<()> {
+        let result = json(r#""Hello World!!! \uD83D\uDE00""#)?;
+        match result {
+            JsonValue::String(s) => assert_eq!(s, "Hello World!!! 😀"),
+            _ => panic!("failed to test."),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_string_parse_with_basic_unicode_escape() -> JsonResult<()> {
+        let result = json(r#""Hello World!!! \u4E2D文""#)?;
+        match result {
+            JsonValue::String(s) => assert_eq!(s, "Hello World!!! 中文"),
+            _ => panic!("failed to test."),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_string_parse_with_basic_escape() -> JsonResult<()> {
+        let result = json(r#""Hello World!!! This is my name \"Frish2021\"""#)?;
+        match result {
+            JsonValue::String(s) => assert_eq!(s, "Hello World!!! This is my name \"Frish2021\""),
+            _ => panic!("failed to test."),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_string_parse() -> JsonResult<()> {
+        let result = json(r#""Hello World!!!""#)?;
+        match result {
+            JsonValue::String(s) => assert_eq!(s, "Hello World!!!"),
+            _ => panic!("failed to test."),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    #[should_panic(expected = "EofError")]
+    fn test_eof() {
+        let result = json(r#""Hello World!!!"#);
+        match result {
+            Ok(_) => (),
+            Err(err) => panic!("{:?}", err),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "SyntaxParseError(UnexpectedContent)")]
+    fn test_unexpected_content() {
+        let result = json(r#""Hello World!!!"sdasd"#);
+        match result {
+            Ok(_) => (),
+            Err(err) => panic!("{:?}", err),
         }
     }
 }
